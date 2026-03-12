@@ -10,7 +10,20 @@ def _norm(text: str) -> str:
 
 
 def _tokens(text: str) -> list[str]:
-    parts = [p for p in _norm(text).split() if len(p) >= 3]
+    stop = {
+        "yes",
+        "yeah",
+        "yep",
+        "no",
+        "ok",
+        "okay",
+        "pls",
+        "please",
+        "confirm",
+        "confirmed",
+        "cancel",
+    }
+    parts = [p for p in _norm(text).split() if len(p) >= 3 and p not in stop]
     # de-dup while keeping order
     seen: set[str] = set()
     out: list[str] = []
@@ -85,4 +98,3 @@ def search_faq(db: Database, query: str, limit: int = 8) -> FaqMatch | None:
         return None
 
     return best
-

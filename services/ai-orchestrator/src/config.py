@@ -24,6 +24,7 @@ HUMANIZE_DELAY_MS_MAX = int(env("HUMANIZE_DELAY_MS_MAX", "900"))
 
 VIN_CHECK_URL = env("VIN_CHECK_URL", "https://vin.partificial.ai/api/vin/check")
 VIN_CHECK_TIMEOUT_S = float(env("VIN_CHECK_TIMEOUT_S", "12"))
+VIN_DEV_TOKEN = env("VIN_DEV_TOKEN", "")
 
 PARTS_SEARCH_URL = env("PARTS_SEARCH_URL", "https://part.partificial.ai/api/parts/search")
 PARTS_SEARCH_TIMEOUT_S = float(env("PARTS_SEARCH_TIMEOUT_S", "20"))

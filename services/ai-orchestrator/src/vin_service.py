@@ -21,6 +21,11 @@ def check_vin(vin: str) -> VinCheckResult:
     if len(vin_clean) != 17:
         return VinCheckResult(ok=False, vin=vin_clean, token=None, meta=None)
 
+    # Dev shortcut: when VIN_DEV_TOKEN is set, skip the external VIN service.
+    dev_token = (config.VIN_DEV_TOKEN or "").strip()
+    if dev_token:
+        return VinCheckResult(ok=True, vin=vin_clean, token=dev_token, meta={"vehicles_count": 1, "source": "dev"})
+
     with httpx.Client(timeout=config.VIN_CHECK_TIMEOUT_S) as client:
         r = client.post(config.VIN_CHECK_URL, json={"vin": vin_clean})
         r.raise_for_status()
@@ -36,4 +41,3 @@ def check_vin(vin: str) -> VinCheckResult:
         token=str(token) if token else None,
         meta=meta if isinstance(meta, dict) else None,
     )
-

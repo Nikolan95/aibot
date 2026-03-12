@@ -50,7 +50,6 @@ def llm_reply(*, model: str, system: str, user: str) -> str | None:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            temperature=0.6,
         )
         choice = resp.choices[0] if resp.choices else None
         content = getattr(getattr(choice, "message", None), "content", None)

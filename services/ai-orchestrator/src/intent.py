@@ -4,22 +4,22 @@ import re
 
 
 PART_HINT_RE = re.compile(
-    r"\\b(brake|pads?|discs?|filter|oil|battery|alternator|starter|spark|clutch|belt|pump|radiator|injector|turbo)\\b",
+    r"\b(brake|pads?|discs?|filter|oil\s*filter|oilfilter|air\s*filter|airfilter|battery|alternator|starter|spark|clutch|belt|pump|radiator|injector|turbo)\b",
     re.IGNORECASE,
 )
 
 SMALLTALK_RE = re.compile(
-    r"\\b(hi|hello|hey|good\\s*(morning|afternoon|evening)|thanks|thank\\s*you|ok|okay|cool|great|lol)\\b",
+    r"\b(hi|hello|hey|good\s*(morning|afternoon|evening)|thanks|thank\s*you|ok|okay|cool|great|lol)\b",
     re.IGNORECASE,
 )
 
 STORE_INFO_RE = re.compile(
-    r"\\b(brand|brands|opening\\s*hours|hours|located|location|contact|email|phone|whatsapp|categories|products)\\b",
+    r"\b(brand|brands|opening\s*hours|hours|located|location|contact|email|phone|whatsapp|categories|products)\b",
     re.IGNORECASE,
 )
 
 ORDER_VERB_RE = re.compile(
-    r"\\b(need|want|looking\\s*for|order|buy|quote|price|availability|available|fit|fits)\\b",
+    r"\b(need|want|looking\s*for|order|buy|quote|price|availability|available|fit|fits)\b",
     re.IGNORECASE,
 )
 
