@@ -1,0 +1,70 @@
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./data/mongo:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d:ro
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minio123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./data/minio:/data
+
+  wa-gateway:
+    build:
+      context: ./services/wa-gateway
+    environment:
+      PORT: 3000
+      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017/aibot}
+      MONGO_DB: ${MONGO_DB:-aibot}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      WA_VERIFY_TOKEN: ${WA_VERIFY_TOKEN:-dev-verify-token}
+      WA_APP_SECRET: ${WA_APP_SECRET:-}
+      WA_PHONE_NUMBER_ID: ${WA_PHONE_NUMBER_ID:-}
+      WA_ACCESS_TOKEN: ${WA_ACCESS_TOKEN:-}
+    depends_on:
+      - mongo
+      - rabbitmq
+      - redis
+    ports:
+      - "3000:3000"
+
+  ai-orchestrator:
+    build:
+      context: ./services/ai-orchestrator
+    environment:
+      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017/aibot}
+      MONGO_DB: ${MONGO_DB:-aibot}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
+      VIN_CHECK_URL: ${VIN_CHECK_URL:-https://vin.partificial.ai/api/vin/check}
+      VIN_CHECK_TIMEOUT_S: ${VIN_CHECK_TIMEOUT_S:-12}
+      PARTS_SEARCH_URL: ${PARTS_SEARCH_URL:-https://part.partificial.ai/api/parts/search}
+      PARTS_SEARCH_TIMEOUT_S: ${PARTS_SEARCH_TIMEOUT_S:-20}
+    depends_on:
+      - mongo
+      - rabbitmq
+      - redis

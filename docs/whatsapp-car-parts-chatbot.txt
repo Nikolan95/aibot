@@ -1,0 +1,149 @@
+🚀 WhatsApp Car Parts Ordering Chatbot – Rebuild Task Summary
+(Compatible with existing chat_sessions & chat_messages collections)
+1️⃣ Infrastructure & Core Setup
+🔹 Services to Create
+WA Gateway (NestJS – Webhook + Sender)
+AI Orchestrator (Python workers)
+RabbitMQ (event queue)
+MongoDB (existing collections)
+Redis (locks + rate limits)
+S3 storage (images + documents)
+🔹 DevOps
+Dockerize all services
+Setup dev / staging / prod environments
+Configure Meta Webhook URLs per environment
+Setup monitoring (OpenTelemetry + logs)
+2️⃣ WhatsApp Gateway (NestJS)
+🔹 Webhook Handling
+When a WA message is received:
+Validate Meta signature
+Extract:
+wa_message_id
+sender phone
+message type (text/image/document)
+message body / media URL
+Check if wa_message_id already exists in chat_messages
+If yes → ignore (idempotency)
+🔹 Session Handling (chat_sessions)
+Find session by sender_id = phone
+If not exists:
+Create new chat_sessions document:
+sender_id = phone
+unread_count = 1
+active = true
+last_message_at = now()
+If exists:
+Increment unread_count
+Update last_message_at
+🔹 Store Incoming Message (chat_messages)
+Insert document:
+session_id
+sender_type = customer
+message
+timestamp = now
+message_type
+caption (if image)
+wa_message_id
+wa_to
+🔹 Publish Event
+Publish MessageReceived to RabbitMQ
+Include session_id
+Include wa_message_id
+3️⃣ AI Orchestrator (Python Worker)
+Consumes MessageReceived.
+🔹 Load Context
+Fetch chat_sessions
+Fetch last N messages from chat_messages
+Check:
+active
+assigned_agent_id
+human takeover rules
+🔹 Conversation Lock
+Use Redis lock on session_id
+Prevent double replies
+4️⃣ VIN Processing
+🔹 If Message Contains VIN
+Validate 17-character VIN
+Decode VIN (external API)
+Store inside:
+chat_sessions.session_data.vehicle = {    vin,    make,    model,    year,    engine,    decoded_at}
+Update chat_sessions.vin field
+🔹 If Image (Vehicle Card)
+Download image
+Store in S3
+Run OCR
+Extract VIN
+Validate & decode VIN
+Store in session_data.vehicle
+5️⃣ Order Flow (Stored in session_data)
+All ordering state is stored inside:
+chat_sessions.session_data.order
+Example structure:
+order: {    step: "waiting_part_name",    items: [],    delivery_address: null,    payment_method: null,    total_price: null,    status: "draft"}
+🔹 Order Steps
+Confirm detected vehicle
+Ask what part is needed
+Match part from inventory
+Confirm quantity
+Calculate total
+Ask delivery details
+Confirm order
+Set:order.status = confirmed
+6️⃣ Sending AI Response
+After generating reply:
+Insert new chat_messages document:
+session_id
+sender_type = bot
+message
+timestamp
+message_type = text
+wa_to
+wa_message_id (from Meta response)
+Then:
+Update chat_sessions.last_message_at
+(Do NOT increment unread_count for bot messages)
+7️⃣ Human Takeover Logic
+If admin assigns agent:
+assigned_agent_id set
+AI worker checks:
+If assigned_agent_id exists → do NOT auto reply
+Or optionally switch to “suggest mode”
+8️⃣ Redis Usage
+Conversation lock per session_id
+Rate limit per sender_id
+Cache VIN decoding
+Cache inventory queries
+9️⃣ Admin Compatibility Rules
+To ensure Laravel backend works without modification:
+Never rename collections
+Never rename fields
+Always populate:
+last_message_at
+unread_count
+Respect deleted_at
+Use consistent sender_type values
+Keep timestamps consistent format
+All new logic must live inside:
+session_data
+Admin UI continues to function exactly the same.
+🔟 Observability
+Track:
+Messages processed per day
+VIN success rate
+OCR accuracy
+AI response time
+Orders created
+Conversion rate (VIN → order)
+Log per message:
+Prompt used
+Tools called
+Final output
+Errors
+🔥 Final Message Processing Flow
+Customer sends message↓WA Gateway validates + stores in chat_messages↓Session updated in chat_sessions↓Event sent to RabbitMQ↓AI Worker processes VIN / OCR / order state↓Bot message inserted into chat_messages↓WA Gateway sends message via Meta↓Admin dashboard updates automatically
+If you want next, I can design:
+The exact RabbitMQ event contracts
+The exact Mongo document examples
+The AI prompt architecture specifically for VIN + car parts
+Or the state machine diagram for order flow
+Tell me which layer you want to lock down next.

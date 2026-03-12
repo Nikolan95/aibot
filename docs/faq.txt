@@ -1,0 +1,22 @@
+Question: How do returns work?
+Answer: PLEASE INSERT...
+Question: Where is MotoParts located?
+Answer: Kunerolgasse 1A, 1230 Vienna, Austria.
+Question: How can I contact you?
+Answer:
+General email: office@motoparts.co.at
+Parts orders via email: teilebestellung@motoparts.co.at
+WhatsApp/Phone parts orders: +43 660 670 6970
+Customer service: +43 660 90100 45 / 46 / 47
+Question: Can I order or inquire via WhatsApp?
+Answer: Yes, orders and inquiries are possible via WhatsApp.
+Question: What product categories do you offer?
+Answer: Motor oils & fluids, spare parts, professional tools, and tires.
+Question: Which brands do you work with?
+Answer: Among others, BOSCH, CLEAN FILTERS, MAHLE, LUK, HELLA, FEBI, CONTITECH, METELLI, NRF, NTN, POWERMAX, SCHAEFFLER, VARTA, VALEO, SONAX, SNR, SKF, VICTOR REINZ, ZF, TQ, and AISIN.
+Question: Why should I buy from MotoParts?
+Answer: Years of workshop experience, professional advice, quality parts, and fair prices – we'll find the right solution for your vehicle.
+Question: Where can I find the legal notice and privacy policy?
+Answer: Both pages are linked in the footer of motoparts.co.at.
+Question: What are your opening hours?
+Answer: Monday to Friday from 8:00 a.m. to 5:00 p.m.
