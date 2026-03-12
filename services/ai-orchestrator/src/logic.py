@@ -9,6 +9,7 @@ from .faq import search_faq
 from .intent import looks_like_part_request, looks_like_smalltalk
 from .openai_client import get_llm_config, llm_reply
 from .part_service import search_parts
+from .tecdoc_service import search_oem
 from .vin_service import check_vin
 
 VIN_RE = re.compile(r"\b([A-HJ-NPR-Z0-9]{17})\b", re.IGNORECASE)
@@ -79,26 +80,142 @@ def _normalize_part_name(text: str) -> str:
     if not t:
         return ""
     t = re.sub(r"(?i)\b(i\s*(would\s*like|want|need)|lets\s*see|please|plz)\b", " ", t)
+    t = re.sub(r"(?i)\b(i\s*would\s*like\s*to)\b", " ", t)
+    t = re.sub(r"(?i)\b(order|buy)\b", " ", t)
     t = re.sub(r"(?i)\b(do\s*you\s*have|have\s*you\s*got|can\s*you\s*get)\b", " ", t)
     t = re.sub(
         r"(?i)\b(give\s*me|send\s*me)\s*(the\s*)?(oem|oem\s*number|oem\s*numbers)\s*(for)?\b",
         " ",
         t,
     )
+    t = re.sub(r"(?i)\b(for\s*my\s*(car|vehicle)|for\s*(my\s*)?car|for\s*(my\s*)?vehicle)\b", " ", t)
     t = re.sub(r"(?i)[^a-z0-9\s\-_/]+", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
+    # common typos / variants
+    t = re.sub(r"(?i)\bbreak\s+pads?\b", "brake pads", t)
+    t = re.sub(r"(?i)\boilfiter\b", "oil filter", t)
+    t = re.sub(r"(?i)\boilfilter\b", "oil filter", t)
     words = t.split(" ")
     if len(words) > 6:
         t = " ".join(words[-6:])
     return t.strip()
 
 
-def _parts_search_messages(oems: dict[str, str]) -> list[str]:
+def _parts_search_messages(oems: list[str]) -> list[str]:
+    # Legacy helper (OEM-only). Kept for fallback.
     msgs: list[str] = []
-    for idx, (oem, label) in enumerate(list(oems.items())[:3], start=1):
-        msgs.append(f"{idx}) {oem}: {label}")
-    msgs.append("Reply with the option number (1-3) you want, or tell me to search again with a different part name.")
+    if oems:
+        msgs.append(f"OEM: {oems[0]}")
     return msgs
+
+
+def _format_desc(desc: list[str]) -> str:
+    if not desc:
+        return ""
+    return "; ".join(desc[:5])
+
+
+def _tecdoc_messages(items: list[dict[str, Any]]) -> list[str]:
+    msgs: list[str] = []
+    for idx, it in enumerate(items[:3], start=1):
+        title = str(it.get("title") or "").strip()
+        desc = it.get("description") or []
+        desc_s = _format_desc(desc if isinstance(desc, list) else [])
+        if desc_s:
+            msgs.append(f"{idx}) {title}\n{desc_s}")
+        else:
+            msgs.append(f"{idx}) {title}")
+    msgs.append("Reply with the option number (1-3) you want, or type a new part name to search again.")
+    return msgs
+
+
+def _lookup_tecdoc_from_oem(oem: str) -> list[dict[str, Any]]:
+    items = search_oem(oem)
+    out: list[dict[str, Any]] = []
+    for it in items[:3]:
+        out.append(
+            {
+                "aftermarket_number": it.aftermarket_number,
+                "brand": it.brand,
+                "title": it.title,
+                "description": it.description,
+                "image": it.image,
+                "pdf": it.pdf,
+            }
+        )
+    return out
+
+
+def _part_query_variants(part_name: str) -> list[str]:
+    base = _normalize_part_name(part_name) or (part_name or "").strip()
+    if not base:
+        return []
+    variants = [base]
+
+    # extra lightweight expansions
+    if "brake pads" in base.lower():
+        variants.append("bremsbeläge")
+        variants.append("bremsbelag")
+        variants.append("bremsbeläge vorne")
+        variants.append("vorne bremsbeläge")
+        variants.append("front brake pads")
+    if "brake disc" in base.lower() or "bremsscheib" in base.lower():
+        variants.append("bremsscheiben")
+        variants.append("front brake disc")
+
+    # de-dup
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in variants:
+        vv = v.strip()
+        if not vv or vv.lower() in seen:
+            continue
+        seen.add(vv.lower())
+        out.append(vv)
+    return out[:4]
+
+
+def _search_oem_then_tecdoc(*, token: str, sender_id: str, part_name: str) -> tuple[str, list[dict[str, Any]]] | None:
+    for q in _part_query_variants(part_name):
+        res = search_parts(token=token, part_name=q, sender_id=sender_id, ret_oem_num=1)
+        first_oem = res.oems[0] if res.oems else ""
+        if not first_oem:
+            continue
+        tecdoc_candidates = _lookup_tecdoc_from_oem(first_oem)
+        return (q, tecdoc_candidates)
+    return None
+
+
+def _wants_new_part(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    return any(
+        p in t
+        for p in [
+            "different part",
+            "another part",
+            "new part",
+            "change part",
+            "search again",
+            "something else",
+        ]
+    )
+
+
+def _is_choice_number(text: str) -> int | None:
+    m = re.search(r"\b([1-3])\b", (text or "").strip())
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _reset_order_for_new_part(order: dict[str, Any]) -> dict[str, Any]:
+    order["step"] = "waiting_part_name"
+    order["status"] = "draft"
+    order["items"] = []
+    order["delivery_address"] = None
+    return order
 
 
 def generate_reply_and_session_patch(
@@ -116,6 +233,9 @@ def generate_reply_and_session_patch(
 
     vin = detect_vin(incoming_text)
     if vin:
+        # If VIN changes mid-conversation, reset order state for the new vehicle.
+        current_vehicle = session_data.get("vehicle")
+        current_vin = str(current_vehicle.get("vin") or "").upper() if isinstance(current_vehicle, dict) else ""
         try:
             res = check_vin(vin)
         except Exception:
@@ -142,6 +262,9 @@ def generate_reply_and_session_patch(
         patch["vin"] = res.vin
         patch["session_data.vehicle"] = vehicle
         order = ensure_order(session_data)
+        if current_vin and current_vin != res.vin:
+            order = _reset_order_for_new_part(order)
+            patch["session_data.pending_part"] = None
         patch["session_data.order"] = order
 
         if res.ok and res.token:
@@ -154,12 +277,7 @@ def generate_reply_and_session_patch(
             sender_id = str(session.get("sender_id") or "")
             if pending_name and sender_id:
                 try:
-                    parts = search_parts(
-                        token=res.token,
-                        part_name=pending_name,
-                        sender_id=sender_id,
-                        ret_oem_num=3,
-                    )
+                    found = _search_oem_then_tecdoc(token=res.token, sender_id=sender_id, part_name=pending_name)
                 except Exception:
                     patch["session_data.pending_part"] = None
                     return (
@@ -169,51 +287,86 @@ def generate_reply_and_session_patch(
                         patch,
                     )
 
-                candidates = [{"oem": k, "label": v} for k, v in list(parts.oems.items())[:3]]
+                if not found:
+                    # Keep the pending part so the user can rephrase without losing context.
+                    order["step"] = "waiting_part_name"
+                    patch["session_data.order"] = order
+                    return (
+                        [
+                            f"Vehicle found for VIN {res.vin}, but I couldn’t find an OEM for “{pending_name}”. Try a different part name (e.g. “brake pads” / “bremsbeläge”)."
+                        ],
+                        patch,
+                    )
+
                 if order.get("items"):
                     order["items"][0]["name"] = pending_name
                 else:
                     order["items"] = [{"name": pending_name, "qty": None, "details": None, "candidates": []}]
-                order["items"][0]["candidates"] = candidates
-                order["step"] = "waiting_oem_choice" if candidates else "waiting_part_name"
+
+                used_query, tecdoc_candidates = found
+                order["items"][0]["query"] = used_query
+                order["items"][0]["candidates"] = tecdoc_candidates
+                order["step"] = "waiting_oem_choice" if tecdoc_candidates else "waiting_part_name"
                 patch["session_data.order"] = order
                 patch["session_data.pending_part"] = None
 
-                if not candidates:
+                if not tecdoc_candidates:
                     return (
                         [
-                            f"Vehicle found for VIN {res.vin}, but I couldn’t determine OEM numbers for “{pending_name}”. Please send a different part name.",
+                            f"Vehicle found for VIN {res.vin}, but I couldn’t fetch TecDoc parts for “{pending_name}”. Please type a different part name to search again.",
                         ],
                         patch,
                     )
-                return (_parts_search_messages(parts.oems), patch)
+                return (_tecdoc_messages(tecdoc_candidates), patch)
 
             return ([f"Vehicle found for VIN {res.vin}. What car part do you need?"], patch)
 
         return ([f"I couldn’t find a vehicle for VIN {res.vin}. Please double-check the VIN and send it again."], patch)
 
+    # Allow starting a new part flow at any time (keeps VIN/token).
+    if _wants_new_part(incoming_text):
+        order = _reset_order_for_new_part(order)
+        patch["session_data.order"] = order
+        return (["Sure — what part do you need?"], patch)
+
     # If we're in a structured order step, do NOT let FAQ matching steal the user's reply.
     if step == "waiting_oem_choice":
-        choice = incoming_text.strip().lower()
-        m = re.search(r"\b([1-3])\b", choice)
-        if not m:
+        # If user asks for another/different part, restart search instead of forcing 1/2/3.
+        if _wants_new_part(incoming_text):
+            order = _reset_order_for_new_part(order)
             patch["session_data.order"] = order
-            return (["Please reply with 1, 2, or 3 (the option number)."], patch)
-        idx = int(m.group(1)) - 1
-        items = order.get("items") or []
-        if not items:
-            order["step"] = "waiting_part_name"
+            return (["No problem — what part should I search for instead?"], patch)
+
+        # If they typed a new part name here, treat it as a new search.
+        if _normalize_part_name(incoming_text) and not _is_choice_number(incoming_text):
+            order = _reset_order_for_new_part(order)
             patch["session_data.order"] = order
-            return (["What part do you need?"], patch)
-        candidates = items[0].get("candidates") or []
-        if not isinstance(candidates, list) or idx >= len(candidates):
+            step = "waiting_part_name"
+        else:
+            n = _is_choice_number(incoming_text)
+            if n is None:
+                patch["session_data.order"] = order
+            return (["Please reply with 1, 2, or 3 (the option number), or type a new part name."], patch)
+
+            idx = n - 1
+            items = order.get("items") or []
+            if not items:
+                order["step"] = "waiting_part_name"
+                patch["session_data.order"] = order
+                return (["What part do you need?"], patch)
+            candidates = items[0].get("candidates") or []
+            if not isinstance(candidates, list) or idx >= len(candidates):
+                patch["session_data.order"] = order
+                return (["That option isn’t available. Reply with 1, 2, or 3."], patch)
+            # candidates now represent TecDoc parts (aftermarket items)
+            items[0]["selected_part"] = candidates[idx]
+            order["items"] = items
+            order["step"] = "waiting_quantity"
             patch["session_data.order"] = order
-            return (["That option isn’t available. Reply with 1, 2, or 3."], patch)
-        items[0]["selected_oem"] = candidates[idx].get("oem")
-        order["items"] = items
-        order["step"] = "waiting_quantity"
-        patch["session_data.order"] = order
-        return ([f"Selected OEM {items[0]['selected_oem']}. How many do you need?"], patch)
+            title = str((items[0].get("selected_part") or {}).get("title") or "the selected part")
+            return ([f"Selected: {title}. How many do you need?"], patch)
+
+        # fall through into waiting_part_name handler below
 
     if step == "confirm_order":
         answer = incoming_text.strip().lower()
@@ -247,6 +400,13 @@ def generate_reply_and_session_patch(
     vehicle = session_data.get("vehicle")
     has_vehicle = isinstance(vehicle, dict) and bool(vehicle.get("vin"))
 
+    # If order is already done/confirmed and user asks for another part, restart order flow.
+    if step in {"done"}:
+        if _wants_new_part(incoming_text) or _normalize_part_name(incoming_text):
+            order = _reset_order_for_new_part(order)
+            patch["session_data.order"] = order
+            step = "waiting_part_name"
+
     # If we don't have a vehicle yet, avoid hard-gating every message behind VIN.
     # Use the LLM for smalltalk/general questions; still ask for VIN for part requests.
     if not has_vehicle:
@@ -257,7 +417,10 @@ def generate_reply_and_session_patch(
             patch["session_data.order"] = ensure_order(session_data)
             return (
                 [
-                    "To match the correct part, please send your 17-character VIN (or a photo of the vehicle card). Then tell me the part name."
+                    (
+                        f"Got it{': ' + part_guess if part_guess else ''}. "
+                        "To match the correct part, please send your 17-character VIN (or a photo of the vehicle card)."
+                    )
                 ],
                 patch,
             )
@@ -318,7 +481,7 @@ def generate_reply_and_session_patch(
 
         if token and sender_id:
             try:
-                res = search_parts(token=token, part_name=part_name, sender_id=sender_id, ret_oem_num=3)
+                found = _search_oem_then_tecdoc(token=token, sender_id=sender_id, part_name=part_name)
             except Exception:
                 order["step"] = "waiting_part_name"
                 patch["session_data.order"] = order
@@ -327,15 +490,26 @@ def generate_reply_and_session_patch(
                     patch,
                 )
 
-            candidates = [{"oem": k, "label": v} for k, v in list(res.oems.items())[:3]]
-            order["items"][0]["candidates"] = candidates
-            order["step"] = "waiting_oem_choice" if candidates else "waiting_part_name"
+            if not found:
+                order["step"] = "waiting_part_name"
+                patch["session_data.order"] = order
+                return (["I couldn’t find an OEM for that part name. Try something like “brake pads” or “oil filter”."], patch)
+
+            used_query, tecdoc_candidates = found
+            order["items"][0]["query"] = used_query
+            order["items"][0]["candidates"] = tecdoc_candidates
+            order["step"] = "waiting_oem_choice" if tecdoc_candidates else "waiting_part_name"
             patch["session_data.order"] = order
 
-            if not candidates:
-                return (["I couldn’t determine OEM numbers for that part. Try a different name (e.g. “oil filter”)."], patch)
+            if not tecdoc_candidates:
+                return (
+                    [
+                        "I found an OEM reference but no TecDoc items came back. Try a different part name.",
+                    ],
+                    patch,
+                )
 
-            return (_parts_search_messages(res.oems), patch)
+            return (_tecdoc_messages(tecdoc_candidates), patch)
 
         # If no token yet, fall back to asking for VIN / clarification.
         if _needs_part_details(part_name):
@@ -367,19 +541,26 @@ def generate_reply_and_session_patch(
 
         if token and sender_id:
             try:
-                res = search_parts(token=token, part_name=part_name, sender_id=sender_id, ret_oem_num=3)
+                found = _search_oem_then_tecdoc(token=token, sender_id=sender_id, part_name=part_name)
             except Exception:
                 order["step"] = "waiting_part_name"
                 patch["session_data.order"] = order
                 return (["I couldn’t search parts right now. Try a different part name (e.g. “oil filter”)."], patch)
 
-            candidates = [{"oem": k, "label": v} for k, v in list(res.oems.items())[:3]]
-            order["items"][0]["candidates"] = candidates
-            order["step"] = "waiting_oem_choice" if candidates else "waiting_part_name"
+            if not found:
+                order["step"] = "waiting_part_name"
+                patch["session_data.order"] = order
+                return (["I couldn’t find an OEM for that part name. Try something like “brake pads” or “oil filter”."], patch)
+
+            used_query, tecdoc_candidates = found
+            order["items"][0]["query"] = used_query
+            order["items"][0]["candidates"] = tecdoc_candidates
+            order["step"] = "waiting_oem_choice" if tecdoc_candidates else "waiting_part_name"
             patch["session_data.order"] = order
-            if not candidates:
-                return (["I couldn’t determine OEM numbers for that part. Try a different name (e.g. “oil filter”)."], patch)
-            return (_parts_search_messages(res.oems), patch)
+
+            if not tecdoc_candidates:
+                return (["I found an OEM reference but no TecDoc items came back. Try a different part name."], patch)
+            return (_tecdoc_messages(tecdoc_candidates), patch)
 
         order["step"] = "waiting_part_name"
         patch["session_data.order"] = order
@@ -408,7 +589,11 @@ def generate_reply_and_session_patch(
         order["step"] = "confirm_order"
         patch["session_data.order"] = order
         item = (order.get("items") or [{}])[0]
-        part = item.get("name", "part")
+        selected = item.get("selected_part") if isinstance(item, dict) else None
+        if isinstance(selected, dict) and selected.get("title"):
+            part = str(selected.get("title"))
+        else:
+            part = item.get("name", "part")
         qty = item.get("qty", 1)
         vin_value = (vehicle or {}).get("vin", "")
         return (

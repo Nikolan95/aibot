@@ -28,3 +28,8 @@ VIN_DEV_TOKEN = env("VIN_DEV_TOKEN", "")
 
 PARTS_SEARCH_URL = env("PARTS_SEARCH_URL", "https://part.partificial.ai/api/parts/search")
 PARTS_SEARCH_TIMEOUT_S = float(env("PARTS_SEARCH_TIMEOUT_S", "20"))
+
+TECDOC_SEARCH_OEM_URL = env("TECDOC_SEARCH_OEM_URL", "https://tecdoc.partificial.ai/api/tecdoc/search-oem")
+TECDOC_SEARCH_OEM_TIMEOUT_S = float(env("TECDOC_SEARCH_OEM_TIMEOUT_S", "20"))
+
+DEBUG_EXTERNAL_CALLS = env("DEBUG_EXTERNAL_CALLS", "0").strip() in {"1", "true", "yes", "on"}

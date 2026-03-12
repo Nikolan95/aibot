@@ -65,6 +65,9 @@ services:
       VIN_DEV_TOKEN: ${VIN_DEV_TOKEN:-}
       PARTS_SEARCH_URL: ${PARTS_SEARCH_URL:-https://part.partificial.ai/api/parts/search}
       PARTS_SEARCH_TIMEOUT_S: ${PARTS_SEARCH_TIMEOUT_S:-20}
+      TECDOC_SEARCH_OEM_URL: ${TECDOC_SEARCH_OEM_URL:-https://tecdoc.partificial.ai/api/tecdoc/search-oem}
+      TECDOC_SEARCH_OEM_TIMEOUT_S: ${TECDOC_SEARCH_OEM_TIMEOUT_S:-20}
+      DEBUG_EXTERNAL_CALLS: ${DEBUG_EXTERNAL_CALLS:-0}
     depends_on:
       - mongo
       - rabbitmq
