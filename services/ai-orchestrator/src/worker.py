@@ -13,6 +13,8 @@ from pymongo import MongoClient
 from . import config
 from .locks import try_lock
 from .logic import generate_reply_and_session_patch, get_last_messages, get_session, update_session_data
+from .intent_classifier import classify_intent
+from .logic import ensure_order
 
 
 def connect_rabbit() -> tuple[pika.BlockingConnection, BlockingChannel]:
@@ -66,6 +68,27 @@ def handle_message(channel: BlockingChannel, delivery_tag: int, db, rds: redis.R
         incoming_text = str(event.get("message") or "")
 
         _context = get_last_messages(db, session_id, config.CONTEXT_MESSAGE_LIMIT)
+
+        try:
+            session_data = session.get("session_data") or {}
+            order = ensure_order(session_data if isinstance(session_data, dict) else {})
+            step = str(order.get("step") or "waiting_part_name")
+            intent = classify_intent(text=incoming_text, order_step=step)
+            wa_message_id = str(event.get("wa_message_id") or "")
+            if wa_message_id:
+                db["chat_messages"].update_one(
+                    {"wa_message_id": wa_message_id},
+                    {
+                        "$set": {
+                            "intent": intent.name,
+                            "intent_confidence": float(intent.confidence),
+                            "intent_data": intent.data,
+                        }
+                    },
+                )
+        except Exception:
+            # Never block replies if intent tagging fails.
+            pass
 
         replies, patch = generate_reply_and_session_patch(db, session, incoming_text)
         if patch:

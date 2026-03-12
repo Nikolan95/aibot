@@ -34,6 +34,15 @@ export class ChatMessage {
 
   @Prop()
   deleted_at?: Date;
+
+  @Prop()
+  intent?: string;
+
+  @Prop()
+  intent_confidence?: number;
+
+  @Prop({ type: Object })
+  intent_data?: Record<string, unknown>;
 }
 
 export const ChatMessageSchema = SchemaFactory.createForClass(ChatMessage);

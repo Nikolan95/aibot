@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
+import { ChatCart, ChatCartSchema } from '../schemas/chat-cart.schema';
 import { ChatMessage, ChatMessageSchema } from '../schemas/chat-message.schema';
 import { ChatSession, ChatSessionSchema } from '../schemas/chat-session.schema';
 import { HealthController } from '../routes/health.controller';
@@ -23,6 +24,7 @@ import { WebhookService } from '../services/webhook.service';
     MongooseModule.forFeature([
       { name: ChatSession.name, schema: ChatSessionSchema, collection: 'chat_sessions' },
       { name: ChatMessage.name, schema: ChatMessageSchema, collection: 'chat_messages' },
+      { name: ChatCart.name, schema: ChatCartSchema, collection: 'chat_carts' },
     ]),
   ],
   controllers: [HealthController, WebhookController, DevChatController],

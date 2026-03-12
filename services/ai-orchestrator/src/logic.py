@@ -11,6 +11,7 @@ from .openai_client import get_llm_config, llm_reply
 from .part_service import search_parts
 from .tecdoc_service import search_oem
 from .vin_service import check_vin
+from .cart import add_cart_item, checkout_active_cart, get_active_cart_items
 
 VIN_RE = re.compile(r"\b([A-HJ-NPR-Z0-9]{17})\b", re.IGNORECASE)
 
@@ -203,8 +204,81 @@ def _wants_new_part(text: str) -> bool:
     )
 
 
+def _wants_new_vehicle(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    return any(
+        p in t
+        for p in [
+            "different car",
+            "another car",
+            "new car",
+            "other car",
+            "different vehicle",
+            "another vehicle",
+            "other vehicle",
+            "change car",
+            "change vehicle",
+            "use different vin",
+            "try different vin",
+        ]
+    )
+
+
+def _wants_checkout(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    return any(
+        p in t
+        for p in [
+            "that would be all",
+            "that's all",
+            "thats all",
+            "that's it",
+            "thats it",
+            "done",
+            "checkout",
+            "no more",
+            "nothing else",
+            "finish",
+            "complete order",
+        ]
+    )
+
+
+def _checkout_flow(db: Database, *, session: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+    session_id = session.get("_id")
+    if not isinstance(session_id, ObjectId):
+        return (["I couldn’t finalize the order right now. Please try again."], {})
+
+    items = get_active_cart_items(db, session_id=session_id)
+    if not items:
+        # Don't close the session if there's nothing in the cart.
+        return (["Your cart is empty — tell me what part you need (and send your VIN if you haven’t yet)."], {})
+
+    try:
+        checkout_active_cart(db, session_id=session_id)
+    except Exception:
+        return (["I couldn’t finalize the cart right now. Please try again in a moment."], {})
+
+    # Mark session inactive and clear state so the next inbound message starts fresh.
+    patch: dict[str, Any] = {
+        "active": False,
+        "vin": "",
+        "session_data": {},
+    }
+
+    msg = (
+        "Thanks for shopping with MotoParts! Your requested parts will be ready for pickup the next business day in our store "
+        "(Kunerolgasse 1A, 1230 Vienna). If you message us again, we can start a new order anytime."
+    )
+    return ([msg], patch)
+
+
 def _is_choice_number(text: str) -> int | None:
-    m = re.search(r"\b([1-3])\b", (text or "").strip())
+    m = re.match(r"^\s*([1-3])\s*[\)\.]?\s*$", (text or ""))
     if not m:
         return None
     return int(m.group(1))
@@ -230,6 +304,19 @@ def generate_reply_and_session_patch(
     # Initialize order state early so we can prioritize order-step replies over FAQ/smalltalk.
     order = ensure_order(session_data)
     step = str(order.get("step") or "waiting_part_name")
+
+    # If a session was checked out previously, any new message reactivates it and restarts from scratch.
+    # (Gateway also sets active=true on inbound; this is a defensive fallback.)
+    if session.get("active") is False:
+        patch["active"] = True
+        patch["vin"] = ""
+        patch["session_data"] = {}
+        session_data = {}
+        order = ensure_order(session_data)
+        step = str(order.get("step") or "waiting_part_name")
+
+    if _wants_checkout(incoming_text):
+        return _checkout_flow(db, session=session)
 
     vin = detect_vin(incoming_text)
     if vin:
@@ -323,6 +410,14 @@ def generate_reply_and_session_patch(
 
         return ([f"I couldn’t find a vehicle for VIN {res.vin}. Please double-check the VIN and send it again."], patch)
 
+    if _wants_new_vehicle(incoming_text):
+        order = _reset_order_for_new_part(order)
+        patch["session_data.order"] = order
+        patch["session_data.vehicle"] = {}
+        patch["session_data.pending_part"] = None
+        patch["vin"] = ""
+        return (["Sure — please send the VIN for the other car."], patch)
+
     # Allow starting a new part flow at any time (keeps VIN/token).
     if _wants_new_part(incoming_text):
         order = _reset_order_for_new_part(order)
@@ -331,23 +426,13 @@ def generate_reply_and_session_patch(
 
     # If we're in a structured order step, do NOT let FAQ matching steal the user's reply.
     if step == "waiting_oem_choice":
-        # If user asks for another/different part, restart search instead of forcing 1/2/3.
         if _wants_new_part(incoming_text):
             order = _reset_order_for_new_part(order)
             patch["session_data.order"] = order
             return (["No problem — what part should I search for instead?"], patch)
 
-        # If they typed a new part name here, treat it as a new search.
-        if _normalize_part_name(incoming_text) and not _is_choice_number(incoming_text):
-            order = _reset_order_for_new_part(order)
-            patch["session_data.order"] = order
-            step = "waiting_part_name"
-        else:
-            n = _is_choice_number(incoming_text)
-            if n is None:
-                patch["session_data.order"] = order
-            return (["Please reply with 1, 2, or 3 (the option number), or type a new part name."], patch)
-
+        n = _is_choice_number(incoming_text)
+        if n is not None:
             idx = n - 1
             items = order.get("items") or []
             if not items:
@@ -358,15 +443,37 @@ def generate_reply_and_session_patch(
             if not isinstance(candidates, list) or idx >= len(candidates):
                 patch["session_data.order"] = order
                 return (["That option isn’t available. Reply with 1, 2, or 3."], patch)
-            # candidates now represent TecDoc parts (aftermarket items)
+
             items[0]["selected_part"] = candidates[idx]
             order["items"] = items
-            order["step"] = "waiting_quantity"
-            patch["session_data.order"] = order
-            title = str((items[0].get("selected_part") or {}).get("title") or "the selected part")
-            return ([f"Selected: {title}. How many do you need?"], patch)
+            try:
+                add_cart_item(
+                    db,
+                    session_id=session["_id"],
+                    sender_id=str(session.get("sender_id") or ""),
+                    part_query=str(items[0].get("query") or items[0].get("name") or ""),
+                    oem=str(items[0].get("oem") or "") or None,
+                    selected_part=items[0]["selected_part"],
+                    qty=1,
+                )
+            except Exception:
+                patch["session_data.order"] = order
+                return (["I selected it, but I couldn’t add it to the cart. Please try again."], patch)
 
-        # fall through into waiting_part_name handler below
+            title = str((items[0].get("selected_part") or {}).get("title") or "the selected part")
+            order = _reset_order_for_new_part(order)
+            patch["session_data.order"] = order
+            return ([f"Added to cart: {title}. Do you want anything else?"], patch)
+
+        # Not a selection; if it looks like a new part name, restart search.
+        normalized = _normalize_part_name(incoming_text)
+        if normalized and re.search(r"[a-zA-Z]", normalized):
+            order = _reset_order_for_new_part(order)
+            patch["session_data.order"] = order
+            step = "waiting_part_name"
+        else:
+            patch["session_data.order"] = order
+            return (["Please reply with 1, 2, or 3 (the option number), or type a new part name."], patch)
 
     if step == "confirm_order":
         answer = incoming_text.strip().lower()

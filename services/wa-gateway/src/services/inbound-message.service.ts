@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { ChatCart, ChatCartDocument } from '../schemas/chat-cart.schema';
 import { ChatMessage, ChatMessageDocument, MessageType } from '../schemas/chat-message.schema';
 import { ChatSession, ChatSessionDocument } from '../schemas/chat-session.schema';
 import { RabbitService } from './rabbit.service';
@@ -20,6 +21,7 @@ export class InboundMessageService {
     private readonly rabbit: RabbitService,
     @InjectModel(ChatSession.name) private readonly sessions: Model<ChatSessionDocument>,
     @InjectModel(ChatMessage.name) private readonly messages: Model<ChatMessageDocument>,
+    @InjectModel(ChatCart.name) private readonly carts: Model<ChatCartDocument>,
   ) {}
 
   async processIncoming(extracted: ExtractedMessage) {
@@ -78,8 +80,27 @@ export class InboundMessageService {
         message: m.message,
         message_type: m.message_type,
         timestamp: m.timestamp,
+        intent: (m as any).intent ?? null,
+        intent_confidence: (m as any).intent_confidence ?? null,
       })),
     };
+  }
+
+  async getCart(senderId: string) {
+    const sender = String(senderId ?? '').trim();
+    if (!sender) return { ok: false, items: [] };
+
+    const session = await this.sessions
+      .findOne({ sender_id: sender, $or: [{ deleted_at: { $exists: false } }, { deleted_at: null }] })
+      .lean();
+
+    if (!session?._id) return { ok: true, items: [] };
+    const sessionId = new Types.ObjectId(String(session._id));
+
+    const cart = await this.carts.findOne({ session_id: sessionId, status: { $in: ['active', null] } }).lean();
+    const items = (cart?.items ?? []) as Array<Record<string, unknown>>;
+
+    return { ok: true, items };
   }
 
   private async findOrCreateSession(senderPhone: string, now: Date): Promise<ChatSessionDocument> {
@@ -99,10 +120,9 @@ export class InboundMessageService {
 
     await this.sessions.updateOne(
       { _id: existing._id },
-      { $inc: { unread_count: 1 }, $set: { last_message_at: now } },
+      { $inc: { unread_count: 1 }, $set: { last_message_at: now, active: true } },
     );
 
     return existing;
   }
 }
-
